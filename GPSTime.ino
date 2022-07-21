@@ -29,7 +29,6 @@
 SoftwareSerial gpsSerial(GPS_RX,GPS_TX);
 time_t lastUpdateGPS=0;  //seconds since January 1, 1970 (epoch)
 time_t lastCycleDevices=0;
-//int secondsSince=0;
 bool warmStart=true;
 bool buildingSentence=false;
 char gpsResponse[200]; //no extended ASCII
