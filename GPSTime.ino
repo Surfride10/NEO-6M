@@ -19,8 +19,11 @@
 */
 
 
+
+
 #include <TimeLib.h>
 #include <SoftwareSerial.h>
+#include <EEPROM.h>
 
 SoftwareSerial gpsSerial(12,11);
 time_t lastUpdateGPS=0;  //since January 1, 1970 (epoch)
@@ -37,6 +40,12 @@ void setup() {
   Serial.flush();
   Serial.println("");
   Serial.println("Starting");
+
+  //remove to init memory
+  //EEPROM.put(0, lastUpdateGPS);
+  //EEPROM.put(sizeof(time_t),'\0');
+
+
 
   pinMode(12, INPUT);
   pinMode(11, OUTPUT);
@@ -77,6 +86,17 @@ void loop() {
           memset(buf,0,sizeof(buf));
           sprintf(buf, "%02d:%02d:%02dgmt %02d/%02d/%02d ws:%d", hour(t), minute(t), second(t), month(t), day(t), year(t),warmStart);
           Serial.println(buf);
+          if (warmStart){
+              //when was the last 2d/3d fix?
+              EEPROM.get(0,t);
+              if (t>0){
+                char *fixType;
+                EEPROM.get(sizeof(time_t),fixType);
+                String sType=fixType;
+                sprintf(buf, "LAST FIX:%cD %02d:%02d:%02dgmt %02d/%02d/%02d", fixType, hour(t), minute(t), second(t), month(t), day(t), year(t));                
+                Serial.println(buf);
+              }
+          }
           lastCycleDevices=now();
       }
     }
@@ -284,11 +304,18 @@ bool TimeSource(unsigned char *pResponse){
       if (iCrLf>0){
         String sQualified=sGSA.substring(0,iCrLf);
         if (CheckSum(sQualified.c_str())){ 
-          char sFixStatus=sGSA[9];
-          if (sFixStatus=='1')
+          char fixStatus=sGSA[9];
+          if (fixStatus=='1')
             warmStart=true;
-          else if ((sFixStatus=='2') || (sFixStatus=='3'))
+          else if ((fixStatus=='2') || (fixStatus=='3')){
+
+            if (timeStatus()==timeSet){
+              //store the last fix time and type
+              EEPROM.put(0, now());
+              EEPROM.put(sizeof(time_t),fixStatus);
+            }
             warmStart=false;
+          }
           //Serial.print("\r\nGSA warmStart:");
           //Serial.println(bWarmStart);
           bResult=true;
