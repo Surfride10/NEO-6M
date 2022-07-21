@@ -173,6 +173,7 @@ bool Spam(unsigned char *pResponse){
 }
 
 void InitSpamBlock(){
+  //correct for spam detected if NEO cycles power
   int iRowCount=sizeof(spamList)/2;  
   /*
     sizeof decays to pointers in the rowCount * sizeof pointer in second element
@@ -327,7 +328,10 @@ bool CheckSum(String sPacket){
   if (iSize>10){
     int iAstericks=sPacket.indexOf('*');
     if (iAstericks>0){
-      String sCS=sPacket.substring(iAstericks+1,iAstericks+3);
+      char csIN[3];
+      memset (csIN,0,sizeof(csIN));
+      csIN[0]=sPacket[iAstericks+1];
+      csIN[1]=sPacket[iAstericks+2];
       sPacket=sPacket.substring(1,iAstericks);
       iSize=sPacket.length();
       int  iChecksum = 0;
@@ -337,7 +341,7 @@ bool CheckSum(String sPacket){
       //yeah, this could be better... think i got the false negatives; case and < 0x10 
       char Calc[3];
       sprintf(Calc,"%02X",iChecksum);
-      bResult=sCS==Calc;
+      bResult=(*csIN==*Calc);
     }
   }
   return bResult;
