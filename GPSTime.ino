@@ -1,6 +1,6 @@
 /*
   written by David Dold, 10Jul22
-  GPS time sync without tinygps
+  Native GPS time sync with NEO-6M via UART1
 
   SUMMARY:
   NEO-GM Unless throttled is taking a sip from a firehouse.
@@ -19,21 +19,22 @@
 */
 
 
-
-
 #include <TimeLib.h>
 #include <SoftwareSerial.h>
 #include <EEPROM.h>
 
-SoftwareSerial gpsSerial(12,11);
-time_t lastUpdateGPS=0;  //since January 1, 1970 (epoch)
+#define GPS_RX 12
+#define GPS_TX 11
+
+SoftwareSerial gpsSerial(GPS_RX,GPS_TX);
+time_t lastUpdateGPS=0;  //seconds since January 1, 1970 (epoch)
 time_t lastCycleDevices=0;
-int secondsSince=0;
+//int secondsSince=0;
 bool warmStart=true;
 bool buildingSentence=false;
-char response[200];
+char gpsResponse[200]; //no extended ASCII
 int packetOffset=0;
-unsigned char *spamList[]={"GSV","GGA","VTG","GLL"};
+char *spamList[]={"GSV","GGA","VTG","GLL"};
 
 void setup() {
   Serial.begin(9600);
@@ -41,7 +42,9 @@ void setup() {
   Serial.println("");
   Serial.println("Starting");
 
-  
+  //Using processor eeprom to track the age and BBR time decay of the last 2d/3d fix
+  //asper spec (pape 29) gps chipset startup hot/warm with no fix and ephemerals are available from BBR - battery backup ram (app four hours since fix).
+  //HOWEVER, when no fix and continual power, internal clock ia used for time infomation regardless of ephemeral state, having the potential for decay.
   bool bEEConfigured = false;
   //comment out next line to reset memory
   EEPROM.get(0, bEEConfigured);
@@ -55,10 +58,9 @@ void setup() {
       EEPROM.put(iEEAddressOffset, '\0');
   }
 
-
-  pinMode(12, INPUT);
-  pinMode(11, OUTPUT);
-  digitalWrite(11,LOW);
+  pinMode(GPS_RX, INPUT);
+  pinMode(GPS_TX, OUTPUT);
+  digitalWrite(GPS_RX,LOW);
   
   gpsSerial.begin(9600);
   gpsSerial.flush();
@@ -67,8 +69,9 @@ void setup() {
 
   delay(500);
   Serial.println("Init nmea packets and cycles");
-  unsigned char pubx40[40];
+  char pubx40[40];
   memset(pubx40,0,sizeof(pubx40));
+  //Throttle Sentences
   //RMCx5
   sprintf(pubx40,"$PUBX,40,RMC,0,5,0,0,0,0");  //page 82
   if (SetCheckSum(pubx40, sizeof(pubx40))) {
@@ -83,7 +86,7 @@ void setup() {
     Serial.print(sPubx);
     gpsSerial.print(sPubx);
   }
-  InitSpamBlock();
+  SetSpamSentences();
 }
 
 void loop() {
@@ -110,72 +113,12 @@ void loop() {
       }
     }
 
-    if (gpsSerial.available() > 0) {
-      bool bFullSentence=false;
-      if (buildingSentence==false){
-        memset(response, 0, sizeof(response));
-        packetOffset = 0;
-      }
-      while ((gpsSerial.available() > 0) && (packetOffset<sizeof(response))) {
-        if (packetOffset>=sizeof(response)){
-          Serial.println("MEMORY OVERFLOW");
-          packetOffset=0;
-        }
-        char c=gpsSerial.read();
-        if (c=='$'){ 
-          //regardless where a start packet comes in, start building a new sentence, tossing buffer
-          buildingSentence=true;
-          if (packetOffset!=0){
-            //Serial.print("Reset mid-sentence:");
-            //Serial.println(packetOffset);
-            memset(response, 0, sizeof(response));
-          }
-          response[0]=c;
-          packetOffset=1;
-        }
-        else{
-            response[packetOffset]=c;
-            if (packetOffset>2){
-              if ((response[packetOffset-1]==0x0D) && (response[packetOffset]==0x0A)){
-                 packetOffset=0;
-                 buildingSentence=false;
-                 bFullSentence=true;
-                 break;
-              }
-            }
-            packetOffset++;
-        }
-      }//while
-      
-      if (!buildingSentence){
-        if (bFullSentence){
-          if (CheckSum(response)){
-            Serial.print("CS+:");
-            for (int x=0;x<sizeof(response);x++)  {
-              if (response[x]!=0)
-                Serial.print(response[x]);
-            }
-            if (!Spam(response)){
-              if (!TimeSource(response)){
-                  if ((timeStatus()!=timeSet)||((now()-lastUpdateGPS>60)))
-                    SyncTimeToGPS(response);
-              }
-            }
-          }
-          else{
-            Serial.print("CS-:");
-            for (int x=0;x<sizeof(response);x++)  {
-              if (response[x]!=0)
-                Serial.print(response[x]);
-            }
-          }
-        }
-      }
-    }
+    if (gpsSerial.available() > 0) 
+        ProcessGPS();
 }
 
 
-bool Spam(unsigned char *pResponse){
+bool Spam(char *pResponse){
   //correct for spam detected if NEO cycles power
   bool bResult=false;
   int iRowCount=sizeof(spamList)/2;  
@@ -187,7 +130,7 @@ bool Spam(unsigned char *pResponse){
   for (int x=0;x<iRowCount;x++){
       char *found=strstr(pResponse,spamList[0,x]);
       if (found){
-        unsigned char pubx40[40];
+        char pubx40[40];
         memset(pubx40,0,sizeof(pubx40));
         sprintf(pubx40,"$PUBX,40,%3s,0,0,0,0,0,0",spamList[0,x]);
         if (SetCheckSum(pubx40,sizeof(pubx40))){
@@ -201,7 +144,7 @@ bool Spam(unsigned char *pResponse){
   return bResult;  
 }
 
-void InitSpamBlock(){
+void SetSpamSentences(){
   //correct for spam detected if NEO cycles power
   int iRowCount=sizeof(spamList)/2;  
   /*
@@ -209,7 +152,7 @@ void InitSpamBlock(){
     impossible to determing sizeof spamlist without counting the sizeof each element.  
   */
   Serial.println(F("BLOCKING:"));
-  unsigned char pubx40[40];
+  char pubx40[40];
   for (int x=0;x<iRowCount;x++){
       memset(pubx40,0,sizeof(pubx40));
       sprintf(pubx40,"$PUBX,40,%3s,0,0,0,0,0,0",spamList[0,x]);
@@ -222,7 +165,7 @@ void InitSpamBlock(){
 }
 
 
-bool SyncTimeToGPS(unsigned char *pResponse){
+bool SyncTimeToGPS(char *pResponse){
     //$GPRMC,184548.00,A,3245.73987,N,11709.12812,W,1.939,,160722,,,A  page 63
     //asper spec device only sends valid data, otherwise field is empty
     bool bResult=false;
@@ -294,7 +237,7 @@ bool SyncTimeToGPS(unsigned char *pResponse){
 }
 
 
-bool TimeSource(unsigned char *pResponse){
+bool TimeSource(char *pResponse){
   bool bResult=false;
   //comma counts are variable bassed on fixed satellite list
   //$GPGSA,A,1,,,,,,,,,,,,,99.99,99.99,99.99*30   page 60
@@ -336,7 +279,7 @@ bool TimeSource(unsigned char *pResponse){
 }
 
 
-bool SetCheckSum(unsigned char *pPacket, int bufferSize){
+bool SetCheckSum(char *pPacket, int bufferSize){
     bool bResult=false;
     //packet sent with five extra bytes -and- without an asterick  0x26 CR_A CR_B 0x0d 0x0a
     int iSize=strlen(pPacket);
@@ -358,7 +301,7 @@ bool SetCheckSum(unsigned char *pPacket, int bufferSize){
     return bResult;
 }
 
-bool CheckSum(unsigned char *pPacket){
+bool CheckSum(char *pPacket){
   bool bResult=false;
   int iSize=strlen(pPacket);
   if (iSize>10){
@@ -385,4 +328,70 @@ bool CheckSum(unsigned char *pPacket){
     }
   }
   return bResult;
+}
+
+void ProcessGPS(){
+    {
+      bool bFullSentence=false;
+      if (buildingSentence==false){
+        memset(gpsResponse, 0, sizeof(gpsResponse));
+        packetOffset = 0;
+      }
+      while ((gpsSerial.available() > 0)) {
+        if (packetOffset>=sizeof(gpsResponse)){
+          Serial.println("MEMORY OVERFLOW");
+          memset(gpsResponse,0,sizeof(gpsResponse));
+          packetOffset=0;
+        }
+        char c=gpsSerial.read();
+        if (c=='$'){ 
+          //regardless where a start packet comes in, start building a new sentence, tossing buffer
+          buildingSentence=true;
+          if (packetOffset!=0){
+            //Serial.print("Reset mid-sentence:");
+            //Serial.println(packetOffset);
+            memset(gpsResponse, 0, sizeof(gpsResponse));
+          }
+          gpsResponse[0]=c;
+          packetOffset=1;
+        }
+        else{
+            gpsResponse[packetOffset]=c;
+            if (packetOffset>2){
+              if ((gpsResponse[packetOffset-1]==0x0D) && (gpsResponse[packetOffset]==0x0A)){
+                 packetOffset=0;
+                 buildingSentence=false;
+                 bFullSentence=true;
+                 break;
+              }
+            }
+            packetOffset++;
+        }
+      }//while
+      
+      if (!buildingSentence){
+        if (bFullSentence){
+          if (CheckSum(gpsResponse)){
+            Serial.print("CS+:");
+            for (int x=0;x<sizeof(gpsResponse);x++)  {
+              if (gpsResponse[x]!=0)
+                Serial.print(gpsResponse[x]);
+            }
+            if (!Spam(gpsResponse)){
+              if (!TimeSource(gpsResponse)){
+                  if ((timeStatus()!=timeSet)||((now()-lastUpdateGPS>60)))
+                    SyncTimeToGPS(gpsResponse);
+              }
+            }
+          }
+          else{
+            Serial.print("CS-:");
+            for (int x=0;x<sizeof(gpsResponse);x++)  {
+              if (gpsResponse[x]!=0)
+                Serial.print(gpsResponse[x]);
+            }
+          }
+        }
+      }
+    }
 }
