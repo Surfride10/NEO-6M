@@ -41,10 +41,19 @@ void setup() {
   Serial.println("");
   Serial.println("Starting");
 
-  //remove to init memory
-  //EEPROM.put(0, lastUpdateGPS);
-  //EEPROM.put(sizeof(time_t),'\0');
-
+  
+  bool bEEConfigured = false;
+  //comment out next line to reset memory
+  EEPROM.get(0, bEEConfigured);
+  if (!bEEConfigured){
+      Serial.println("Updating EEProm");
+      int iEEAddressOffset = 0;
+      EEPROM.put(iEEAddressOffset,true);
+      iEEAddressOffset+=sizeof(bool);
+      EEPROM.put(iEEAddressOffset, lastUpdateGPS);
+      iEEAddressOffset+=sizeof(time_t);
+      EEPROM.put(iEEAddressOffset, '\0');
+  }
 
 
   pinMode(12, INPUT);
@@ -88,10 +97,10 @@ void loop() {
           Serial.println(buf);
           if (warmStart){
               //when was the last 2d/3d fix?
-              EEPROM.get(0,t);
+              EEPROM.get(sizeof(bool),t);
               if (t>0){
                 char *fixType;
-                EEPROM.get(sizeof(time_t),fixType);
+                EEPROM.get(sizeof(time_t)+sizeof(bool),fixType);
                 String sType=fixType;
                 sprintf(buf, "LAST FIX:%cD %02d:%02d:%02dgmt %02d/%02d/%02d", fixType, hour(t), minute(t), second(t), month(t), day(t), year(t));                
                 Serial.println(buf);
@@ -311,8 +320,8 @@ bool TimeSource(unsigned char *pResponse){
 
             if (timeStatus()==timeSet){
               //store the last fix time and type
-              EEPROM.put(0, now());
-              EEPROM.put(sizeof(time_t),fixStatus);
+              EEPROM.put(sizeof(bool), now());
+              EEPROM.put(sizeof(time_t)+sizeof(bool),fixStatus);
             }
             warmStart=false;
           }
