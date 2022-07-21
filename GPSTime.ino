@@ -1,6 +1,6 @@
 /*
   written by David Dold, 10Jul22
-  Native GPS time sync with NEO-6M via UART1
+  Native GPS time sync using NEO-6M via SoftwareSerial on UART1
 
   SUMMARY:
   NEO-GM Unless throttled is taking a sip from a firehouse.
