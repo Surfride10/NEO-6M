@@ -25,6 +25,8 @@
 
 #define GPS_RX 12
 #define GPS_TX 11
+#define NMEA_CYCLE_REPORT 10  //cycles
+#define SYNC_TIME_T_TO_GPS 60 //seconds
 
 SoftwareSerial gpsSerial(GPS_RX,GPS_TX);
 time_t lastUpdateGPS=0;  //seconds since January 1, 1970 (epoch)
@@ -71,15 +73,15 @@ void setup() {
   char pubx40[40];
   memset(pubx40,0,sizeof(pubx40));
   //Throttle Sentences
-  //RMCx5
-  sprintf(pubx40,"$PUBX,40,RMC,0,5,0,0,0,0");  //page 82
+  //RMCxNMEA_CYCLE_REPORT
+  sprintf(pubx40,"$PUBX,40,RMC,0,%d,0,0,0,0",NMEA_CYCLE_REPORT);  //page 82
   if (SetCheckSum(pubx40, sizeof(pubx40))) {
     String sPubx=pubx40;
     Serial.print(sPubx);
     gpsSerial.print(sPubx);
   }
-  //GSAx5
-  sprintf(pubx40,"$PUBX,40,GSA,0,5,0,0,0,0");
+  //GSAxNMEA_CYCLE_REPORT
+  sprintf(pubx40,"$PUBX,40,GSA,0,%d,0,0,0,0",NMEA_CYCLE_REPORT);
   if (SetCheckSum(pubx40, sizeof(pubx40))) {
     String sPubx=pubx40;
     Serial.print(sPubx);
@@ -103,8 +105,10 @@ void loop() {
               if (t>0){
                 char *fixType;
                 EEPROM.get(sizeof(time_t)+sizeof(bool),fixType);
+                
                 int iElapsedMinutes=(now()-t)/60;
                 if (iElapsedMinutes>10){
+                  //sprintf(buf, "LAST FIX:%cD %d minutes old %02d:%02d:%02dgmt %02d/%02d/%02d", fixType, hour(t), minute(t), second(t), month(t), day(t), year(t));                
                   sprintf(buf, "%d minutes since a %cd fix", iElapsedMinutes,fixType);                
                   Serial.println(buf);
                 }
@@ -380,7 +384,7 @@ void ProcessGPS(){
             }
             if (!Spam(gpsResponse)){
               if (!TimeSource(gpsResponse)){
-                  if ((timeStatus()!=timeSet)||((now()-lastUpdateGPS>60)))
+                  if ((timeStatus()!=timeSet)||((now()-lastUpdateGPS>SYNC_TIME_T_TO_GPS)))
                     SyncTimeToGPS(gpsResponse);
               }
             }
