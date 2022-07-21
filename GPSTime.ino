@@ -103,9 +103,11 @@ void loop() {
               if (t>0){
                 char *fixType;
                 EEPROM.get(sizeof(time_t)+sizeof(bool),fixType);
-                String sType=fixType;
-                sprintf(buf, "LAST FIX:%cD %02d:%02d:%02dgmt %02d/%02d/%02d", fixType, hour(t), minute(t), second(t), month(t), day(t), year(t));                
-                Serial.println(buf);
+                int iElapsedMinutes=(now()-t)/60;
+                if (iElapsedMinutes>10){
+                  sprintf(buf, "%d minutes since a %cd fix", iElapsedMinutes,fixType);                
+                  Serial.println(buf);
+                }
               }
           }
           lastCycleDevices=now();
