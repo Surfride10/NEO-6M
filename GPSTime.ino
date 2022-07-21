@@ -41,8 +41,8 @@ void setup() {
   Serial.println("");
   Serial.println("Starting");
 
-  //Using processor eeprom to track the age and BBR time decay of the last 2d/3d fix
-  //asper spec (pape 29) gps chipset startup hot/warm with no fix and ephemerals are available from BBR - battery backup ram (app four hours since fix).
+  //Using processor eeprom to track the age and internal time decay from the last 2d/3d fix
+  //asper spec (pape 29) gps chipset startup hot/warm with no fix and ephemerals available from BBR - battery backup ram (app four hours since fix).
   //HOWEVER, when no fix and continual power, internal clock ia used for time infomation regardless of ephemeral state, having the potential for decay.
   bool bEEConfigured = false;
   //comment out next line to reset memory
