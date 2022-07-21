@@ -3,6 +3,7 @@
   GPS time sync without tinygps
 
   SUMMARY:
+  NEO-GM Unless throttled is taking a sip from a firehouse.
   as sketch gets busy, checksums fail and sentences discarded.
   tracks warm-start (when ephemerals available) until GPGSA status changes to 2d/3d fix
   resyncs internal time with gps/noGPS every x seconds
@@ -29,6 +30,7 @@ bool warmStart=true;
 bool buildingSentence=false;
 char response[200];
 int packetOffset=0;
+unsigned char *spamList[]={"GSV","GGA","VTG","GLL"};
 
 void setup() {
   Serial.begin(9600);
@@ -43,6 +45,7 @@ void setup() {
   gpsSerial.begin(9600);
   gpsSerial.flush();
   buildingSentence=false;
+
 
   delay(500);
   Serial.println("Init nmea packets and cycles");
@@ -62,27 +65,7 @@ void setup() {
     Serial.print(sPubx);
     gpsSerial.print(sPubx);
   }
-  //noGSV
-  sprintf(pubx40,"$PUBX,40,GSV,0,0,0,0,0,0");
-  if (SetCheckSum(pubx40, sizeof(pubx40))) {
-    String sPubx=pubx40;
-    Serial.print(sPubx);
-    gpsSerial.print(sPubx);
-  }
-  //noGGA
-  sprintf(pubx40,"$PUBX,40,GGA,0,0,0,0,0,0");
-  if (SetCheckSum(pubx40, sizeof(pubx40))) {
-      String sPubx=pubx40;
-      Serial.print(sPubx);
-      gpsSerial.print(sPubx);
-  }
-  //noVTG
-  sprintf(pubx40,"$PUBX,40,VTG,0,0,0,0,0,0");
-  if (SetCheckSum(pubx40, sizeof(pubx40))) {
-      String sPubx=pubx40;
-      Serial.print(sPubx);
-      gpsSerial.print(sPubx);
-  }
+  InitSpamBlock();
 }
 
 void loop() {
@@ -104,8 +87,7 @@ void loop() {
         memset(response, 0, sizeof(response));
         packetOffset = 0;
       }
-      while ((gpsSerial.available() > 0) && (packetOffset<sizeof(response)))
-      {
+      while ((gpsSerial.available() > 0) && (packetOffset<sizeof(response))) {
         if (packetOffset>=sizeof(response)){
           Serial.println("MEMORY OVERFLOW");
           packetOffset=0;
@@ -139,9 +121,16 @@ void loop() {
       if (!buildingSentence){
         if (bFullSentence){
           if (CheckSum(response)){
-            if (!TimeSource(response)){
-              if ((timeStatus()!=timeSet)||((now()-lastUpdateGPS>60)))
-                SyncTimeToGPS(response);
+            Serial.print("CS+:");
+            for (int x=0;x<sizeof(response);x++)  {
+              if (response[x]!=0)
+                Serial.print(response[x]);
+            }
+            if (!Spam(response)){
+              if (!TimeSource(response)){
+                  if ((timeStatus()!=timeSet)||((now()-lastUpdateGPS>60)))
+                    SyncTimeToGPS(response);
+              }
             }
           }
           else{
@@ -157,10 +146,56 @@ void loop() {
 }
 
 
+bool Spam(unsigned char *pResponse){
+  //correct for spam detected if NEO cycles power
+  bool bResult=false;
+  int iRowCount=sizeof(spamList)/2;  
+  /*
+    sizeof decays to pointers in the rowCount * sizeof pointer in second element
+    impossible to determing sizeof spamlist without counting the sizeof each element.  
+  */
+  
+  for (int x=0;x<iRowCount;x++){
+      char *found=strstr(pResponse,spamList[0,x]);
+      if (found){
+        unsigned char pubx40[40];
+        memset(pubx40,0,sizeof(pubx40));
+        sprintf(pubx40,"$PUBX,40,%3s,0,0,0,0,0,0",spamList[0,x]);
+        if (SetCheckSum(pubx40,sizeof(pubx40))){
+          Serial.println("SPAM DETECTED");
+          String sTemp=pubx40;
+          Serial.println(sTemp);
+          gpsSerial.print(sTemp);
+        }
+      }
+  }
+  return bResult;  
+}
 
-void SyncTimeToGPS(unsigned char *pResponse){
+void InitSpamBlock(){
+  int iRowCount=sizeof(spamList)/2;  
+  /*
+    sizeof decays to pointers in the rowCount * sizeof pointer in second element
+    impossible to determing sizeof spamlist without counting the sizeof each element.  
+  */
+  Serial.println(F("BLOCKING:"));
+  unsigned char pubx40[40];
+  for (int x=0;x<iRowCount;x++){
+      memset(pubx40,0,sizeof(pubx40));
+      sprintf(pubx40,"$PUBX,40,%3s,0,0,0,0,0,0",spamList[0,x]);
+      if (SetCheckSum(pubx40,sizeof(pubx40))){
+        String sTemp=pubx40;
+        Serial.print(sTemp);
+        gpsSerial.print(sTemp);
+      }
+  }
+}
+
+
+bool SyncTimeToGPS(unsigned char *pResponse){
     //$GPRMC,184548.00,A,3245.73987,N,11709.12812,W,1.939,,160722,,,A  page 63
     //asper spec device only sends valid data, otherwise field is empty
+    bool bResult=false;
     char *found=strstr(pResponse,"$GPRMC");  //this could be anywhere in the buffer -snd- there may be more than one instance
     if (found!=NULL){
       String sParser=pResponse;
@@ -219,12 +254,15 @@ void SyncTimeToGPS(unsigned char *pResponse){
               // set the Time to the latest GPS reading
               setTime(iHour, iMinute, iSecond, iDay, iMonth, iYear);
               lastUpdateGPS=now();
+              bResult=true;
             }
           }
         }
       }
     }
+    return bResult;
 }
+
 
 bool TimeSource(unsigned char *pResponse){
   bool bResult=false;
@@ -263,7 +301,7 @@ bool TimeSource(unsigned char *pResponse){
 
 bool SetCheckSum(unsigned char *pPacket, int bufferSize){
     bool bResult=false;
-    //packet sent with five extra spaces -and- without an asterick  0x26 CR_A CR_B 0x0d 0x0a
+    //packet sent with five extra bytes -and- without an asterick  0x26 CR_A CR_B 0x0d 0x0a
     int iSize=strlen(pPacket);
     if ((iSize+5)<=bufferSize){
       //do not include $
@@ -304,4 +342,3 @@ bool CheckSum(String sPacket){
   }
   return bResult;
 }
-
