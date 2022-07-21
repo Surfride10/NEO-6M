@@ -204,7 +204,7 @@ bool SyncTimeToGPS(unsigned char *pResponse){
       if (iLastPacket>=5){
         iLastPacket-=5;
         String sRMC=sParser.substring(iLastPacket);
-        if (CheckSum(sRMC)){        
+        if (CheckSum(sRMC.c_str())){        
           Serial.print("\r\nRMC Qualified:");
           Serial.print(sRMC);
           int iHour=-1;
@@ -283,7 +283,7 @@ bool TimeSource(unsigned char *pResponse){
   
       if (iCrLf>0){
         String sQualified=sGSA.substring(0,iCrLf);
-        if (CheckSum(sQualified)){ 
+        if (CheckSum(sQualified.c_str())){ 
           char sFixStatus=sGSA[9];
           if (sFixStatus=='1')
             warmStart=true;
@@ -322,23 +322,27 @@ bool SetCheckSum(unsigned char *pPacket, int bufferSize){
     return bResult;
 }
 
-bool CheckSum(String sPacket){
+bool CheckSum(unsigned char *pPacket){
   bool bResult=false;
-  int iSize=sPacket.length();
+  int iSize=strlen(pPacket);
   if (iSize>10){
-    int iAstericks=sPacket.indexOf('*');
+    //find the asterick
+    int iAstericks=0;
+    for (int x=0;x<iSize;x++){
+      if (pPacket[x]=='*'){
+        iAstericks=x;
+        break;
+      }
+    }
     if (iAstericks>0){
       char csIN[3];
       memset (csIN,0,sizeof(csIN));
-      csIN[0]=sPacket[iAstericks+1];
-      csIN[1]=sPacket[iAstericks+2];
-      sPacket=sPacket.substring(1,iAstericks);
-      iSize=sPacket.length();
+      csIN[0]=pPacket[iAstericks+1];
+      csIN[1]=pPacket[iAstericks+2];
       int  iChecksum = 0;
-      for (int x=0;x<iSize;x++){
-        iChecksum = iChecksum ^ (byte)sPacket[x]; //xor
+      for (int x=1;x<iAstericks;x++){
+        iChecksum = iChecksum ^ (byte)pPacket[x]; //xor
       }
-      //yeah, this could be better... think i got the false negatives; case and < 0x10 
       char Calc[3];
       sprintf(Calc,"%02X",iChecksum);
       bResult=(*csIN==*Calc);
