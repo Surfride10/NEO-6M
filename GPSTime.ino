@@ -10,7 +10,7 @@
 
   NOTES:
   invariably checksum failing on sentences indicates lost characters and buffer overruns as processor cannot keep up with the volume of data from gps chip.  
-  setup mitigates this with sentence pubx,40 suppressing unwanted sentences, and reporting wanted sentences every X cycle.
+  setup mitigates this with sentence pubx,40 suppressing unwanted sentences, and reporting desired sentences every X cycle.
   from what I can tell, slowest cycle rate is every second; way too fast for platform
 
   GPS chipset does not report inaccurate data, unless forced.
