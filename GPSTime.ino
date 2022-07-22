@@ -21,6 +21,8 @@
   3.GPS time accuracy may decay without a fix, without a fix gps chipset uses internal time clock.
   4.GPS chipset power cycle & no fix & previous fix: $GPRMC contains time/date information maintained by BBR -page 27
 
+  Tested for 1410 minutes off BBR, 3d sync; no decay (in seconds).
+
 
   $GPTXT,01,01,02,u-blox ag - www.u-blox.com*50
   $GPTXT,01,01,02,HW  UBX-G70xx   00070000 FF7FFFFFo*69
@@ -107,8 +109,7 @@ void loop() {
                 char *fixType;
                 EEPROM.get(sizeof(time_t)+sizeof(bool),fixType);
                 int iElapsedMinutes=(now()-t)/60;
-                //if (iElapsedMinutes>10)
-                {
+                if (iElapsedMinutes>10){
                   memset(buf,0,sizeof(buf));
                   sprintf(buf, "%d minutes since a %cd fix", iElapsedMinutes,fixType);                
                   Serial.println(buf);
