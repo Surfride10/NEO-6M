@@ -4,17 +4,32 @@
 
   SUMMARY:
   NEO-GM Unless throttled is taking a sip from a firehouse.
-  as sketch gets busy, checksums fail and sentences discarded.
-  tracks warm-start (when ephemerals available) until GPGSA status changes to 2d/3d fix
   resyncs internal time with gps/noGPS every x seconds
 
+  Without throtling on an ATMEGA328, requires 100% dedicated processing of GPS data, should the processor get busy, sentences become malformed from dropped characters,
+  causing checksums to fail and sentences discarded.
+  Uses eeprom to track start types (ephemeral availability) until GPGSA status changes to 2d/3d fix 
+  
   NOTES:
   invariably checksum failing on sentences indicates lost characters and buffer overruns as processor cannot keep up with the volume of data from gps chip.  
-  setup mitigates this with sentence pubx,40 suppressing unwanted sentences, and reporting desired sentences every X cycle.
-  from what I can tell, slowest cycle rate is every second; way too fast for platform
+  setup() mitigates this via sentence $pubx,40 by suppressing unwanted sentences, and reporting desired sentences every X cycle.
+  from what I can tell, slowest cycle rate is every second; way too fast for platform.
 
-  GPS chipset does not report inaccurate data, unless forced.
-  
+  GIVEN:
+  1.GPS chipset does not report inaccurate data, unless forced; if a field is present, its current and accurate.
+  2.GPS LED does not blink on 2d fix, only 2d fix needed for GPS to retrieve time. 
+  3.GPS time accuracy may decay without a fix, without a fix gps chipset uses internal time clock.
+  4.GPS chipset power cycle & no fix & previous fix: $GPRMC contains time/date information maintained by BBR -page 27
+
+
+  $GPTXT,01,01,02,u-blox ag - www.u-blox.com*50
+  $GPTXT,01,01,02,HW  UBX-G70xx   00070000 FF7FFFFFo*69
+  $GPTXT,01,01,02,ROM CORE 1.00 (59842) Jun 27 2012 17:43:52*59
+  $GPTXT,01,01,02,PROTVER 14.00*1E
+  $GPTXT,01,01,02,ANTSUPERV=AC SD PDoS SR*20
+  $GPTXT,01,01,02,ANTSTATUS=DONTKNOW*33
+  $GPTXT,01,01,02,LLC FFFFFFFF-FFFFFFFF-FFFFFFFF-FFFFFFFF-FFFFFFFD*2C
+
   based on  https://content.u-blox.com/sites/default/files/products/documents/u-blox6_ReceiverDescrProtSpec_%28GPS.G6-SW-10018%29_Public.pdf
 */
 
@@ -31,17 +46,17 @@
 SoftwareSerial gpsSerial(GPS_RX,GPS_TX);
 time_t lastUpdateGPS=0;  //seconds since January 1, 1970 (epoch)
 time_t lastCycleDevices=0;
-bool warmStart=true;
+bool gpsInternalClock=true;
 bool buildingSentence=false;
 char gpsResponse[200]; //no extended ASCII
 int packetOffset=0;
 char *spamList[]={"GSV","GGA","VTG","GLL"};
+char *throttleList[]={"RMC","GSA"};
 
 void setup() {
   Serial.begin(9600);
   Serial.flush();
-  Serial.println("");
-  Serial.println("Starting");
+  Serial.println(F("\r\nStarting"));
 
   //Using processor eeprom to track the age and internal time decay from the last 2d/3d fix
   //asper spec (pape 29) gps chipset startup hot/warm with no fix and ephemerals available from BBR - battery backup ram (app four hours since fix).
@@ -50,7 +65,7 @@ void setup() {
   //comment out next line to reset memory
   EEPROM.get(0, bEEConfigured);
   if (!bEEConfigured){
-      Serial.println("Updating EEProm");
+      Serial.println(F("Updating EEProm"));
       int iEEAddressOffset = 0;
       EEPROM.put(iEEAddressOffset,true);
       iEEAddressOffset+=sizeof(bool);
@@ -67,27 +82,13 @@ void setup() {
   gpsSerial.flush();
   buildingSentence=false;
 
+  delay(100);
+  Serial.println(F("Init nmea packets and cycles"));  //page 82
+  unsigned int iRowCount=sizeof(spamList)/2;  
+  SetSentences(spamList, iRowCount, 0);
+  iRowCount=sizeof(throttleList)/2;  
+  SetSentences(throttleList, iRowCount, NMEA_CYCLE_REPORT);
 
-  delay(500);
-  Serial.println("Init nmea packets and cycles");
-  char pubx40[40];
-  memset(pubx40,0,sizeof(pubx40));
-  //Throttle Sentences
-  //RMCxNMEA_CYCLE_REPORT
-  sprintf(pubx40,"$PUBX,40,RMC,0,%d,0,0,0,0",NMEA_CYCLE_REPORT);  //page 82
-  if (SetCheckSum(pubx40, sizeof(pubx40))) {
-    String sPubx=pubx40;
-    Serial.print(sPubx);
-    gpsSerial.print(sPubx);
-  }
-  //GSAxNMEA_CYCLE_REPORT
-  sprintf(pubx40,"$PUBX,40,GSA,0,%d,0,0,0,0",NMEA_CYCLE_REPORT);
-  if (SetCheckSum(pubx40, sizeof(pubx40))) {
-    String sPubx=pubx40;
-    Serial.print(sPubx);
-    gpsSerial.print(sPubx);
-  }
-  SetSpamSentences();
 }
 
 void loop() {
@@ -97,18 +98,18 @@ void loop() {
           time_t t=now();
           char buf[30];
           memset(buf,0,sizeof(buf));
-          sprintf(buf, "%02d:%02d:%02dgmt %02d/%02d/%02d ws:%d", hour(t), minute(t), second(t), month(t), day(t), year(t),warmStart);
+          sprintf(buf, "%02d:%02d:%02d GMT %02d/%02d/%02d", hour(t), minute(t), second(t), month(t), day(t), year(t));
           Serial.println(buf);
-          if (warmStart){
+          if (gpsInternalClock){
               //when was the last 2d/3d fix?
               EEPROM.get(sizeof(bool),t);
               if (t>0){
                 char *fixType;
                 EEPROM.get(sizeof(time_t)+sizeof(bool),fixType);
-                
                 int iElapsedMinutes=(now()-t)/60;
-                if (iElapsedMinutes>10){
-                  //sprintf(buf, "LAST FIX:%cD %d minutes old %02d:%02d:%02dgmt %02d/%02d/%02d", fixType, hour(t), minute(t), second(t), month(t), day(t), year(t));                
+                //if (iElapsedMinutes>10)
+                {
+                  memset(buf,0,sizeof(buf));
                   sprintf(buf, "%d minutes since a %cd fix", iElapsedMinutes,fixType);                
                   Serial.println(buf);
                 }
@@ -135,37 +136,33 @@ bool Spam(char *pResponse){
   for (int x=0;x<iRowCount;x++){
       char *found=strstr(pResponse,spamList[0,x]);
       if (found){
-        char pubx40[40];
-        memset(pubx40,0,sizeof(pubx40));
-        sprintf(pubx40,"$PUBX,40,%3s,0,0,0,0,0,0",spamList[0,x]);
-        if (SetCheckSum(pubx40,sizeof(pubx40))){
-          Serial.println("SPAM DETECTED");
-          String sTemp=pubx40;
-          Serial.println(sTemp);
-          gpsSerial.print(sTemp);
-        }
+        Serial.println(F("SPAM DETECTED"));
+        unsigned int iRowCount=sizeof(spamList)/2;  
+        SetSentences(spamList, iRowCount, 0);
+        iRowCount=sizeof(throttleList)/2;  
+        SetSentences(throttleList, iRowCount, NMEA_CYCLE_REPORT);
+        break;
       }
   }
   return bResult;  
 }
 
-void SetSpamSentences(){
-  //correct for spam detected if NEO cycles power
-  int iRowCount=sizeof(spamList)/2;  
-  /*
-    sizeof decays to pointers in the rowCount * sizeof pointer in second element
-    impossible to determing sizeof spamlist without counting the sizeof each element.  
-  */
-  Serial.println(F("BLOCKING:"));
+void SetSentences(char **pList, unsigned int rowCount, unsigned int cycleSetting){
+  if (cycleSetting==0)
+    Serial.println(F("BLOCKING:"));
+  else
+    Serial.println(F("THROTTLING:"));
   char pubx40[40];
-  for (int x=0;x<iRowCount;x++){
-      memset(pubx40,0,sizeof(pubx40));
-      sprintf(pubx40,"$PUBX,40,%3s,0,0,0,0,0,0",spamList[0,x]);
-      if (SetCheckSum(pubx40,sizeof(pubx40))){
-        String sTemp=pubx40;
-        Serial.print(sTemp);
-        gpsSerial.print(sTemp);
+  for (int x=0;x<rowCount;x++){
+    memset(pubx40,0,sizeof(pubx40));
+    sprintf(pubx40,"$PUBX,40,%s,0,%d,0,0,0,0",pList[0,x],cycleSetting);
+    if (SetCheckSum(pubx40,sizeof(pubx40))){
+      for (int x=0; x<strlen(pubx40);x++){
+        Serial.print(pubx40[x]);
+        gpsSerial.write(pubx40[x]);
+        
       }
+    }
   }
 }
 
@@ -182,27 +179,18 @@ bool SyncTimeToGPS(char *pResponse){
         iLastPacket-=5;
         String sRMC=sParser.substring(iLastPacket);
         if (CheckSum(sRMC.c_str())){        
-          Serial.print("\r\nRMC Qualified:");
-          Serial.print(sRMC);
-          int iHour=-1;
-          int iMinute=-1;
-          int iSecond=-1;
-          int iDay=-1;
-          int iMonth=-1;
-          int iYear=-1;
-        
+          tmElements_t gpsElements = {0,0,0,0,0,0,0};
+
           //$GPRMC,153938.00,V,,,,,,,160722,,,N*78  --VALIDATED
           int iStart=sRMC.indexOf('$GPRMC,')+1;
           if (iStart==7){
             String sTime=sRMC.substring(iStart);
             int iTimeEnd=sTime.indexOf(',');
             iTimeEnd-=3;
-            //Serial.print("\r\nTime:");
             sTime=sTime.substring(0,iTimeEnd);
-            //Serial.println(sTime);  //HHMMSS
-            iHour=sTime.substring(0,2).toInt();
-            iMinute=sTime.substring(2,4).toInt();
-            iSecond=sTime.substring(4,6).toInt();
+            gpsElements.Hour=sTime.substring(0,2).toInt();
+            gpsElements.Minute=sTime.substring(2,4).toInt();
+            gpsElements.Second=sTime.substring(4,6).toInt();
           }
 
           String sDate=sRMC.substring(iStart);
@@ -213,28 +201,38 @@ bool SyncTimeToGPS(char *pResponse){
           }
           
           int iDateEnd=sDate.indexOf(',');
+          //dave
           sDate=sDate.substring(0,iDateEnd);
           if (sDate.length()==6){
-            iDay=sDate.substring(0,2).toInt();
-            iMonth=sDate.substring(2,4).toInt();
-            iYear=sDate.substring(4,6).toInt();
-            //sprintf(buf, "%2d/%2d/%2d", iMonth,iDay,iYear);
-            //Serial.println(buf);
+            gpsElements.Day=sDate.substring(0,2).toInt();
+            gpsElements.Month=sDate.substring(2,4).toInt();
+            gpsElements.Year=sDate.substring(4,6).toInt()+30;  //based off year=0 1971, year=2 1972  year=30 2000
 
-            if ((iHour!=-1) && (iMinute!=-1) && (iSecond!=-1)){
-              char buf[30];
-              memset(buf,0,sizeof(buf));
-              if (warmStart)
-                sprintf(buf, "\r\nnoGPS: %02d:%02d:%02d %02d/%02d/%02d", iHour, iMinute, iSecond, iMonth, iDay, iYear);
-              else
-                sprintf(buf, "\r\nGPS: %02d:%02d:%02d %02d/%02d/%02d", iHour, iMinute, iSecond, iMonth, iDay, iYear);
-              Serial.println(buf);
-              // set the Time to the latest GPS reading
-              setTime(iHour, iMinute, iSecond, iDay, iMonth, iYear);
-              lastUpdateGPS=now();
+            lastUpdateGPS=makeTime(gpsElements);
+            if (lastUpdateGPS>0){                        
+              if (timeStatus()!=timeSet){
+                  if (gpsInternalClock)
+                    Serial.println(F("TimeSet using BBR"));
+                  else
+                    Serial.println(F("TimeSet using GPS"));
+                  setTime(lastUpdateGPS);
+              }
+              else{
+                  int decay=lastUpdateGPS-now();
+                  if (decay!=0){
+                    setTime(lastUpdateGPS);
+                    char buf[45];
+                    memset(buf,0,sizeof(buf));
+                    if (gpsInternalClock)
+                      sprintf(buf,"TIME mismatch: %d seconds, resync using:BBR", decay);
+                    else
+                      sprintf(buf,"TIME mismatch: %d seconds, resync using:GPS", decay);
+                    Serial.println(buf);
+                  }
+              }
               bResult=true;
-            }
-          }
+           }
+         }
         }
       }
     }
@@ -263,7 +261,7 @@ bool TimeSource(char *pResponse){
         if (CheckSum(sQualified.c_str())){ 
           char fixStatus=sGSA[9];
           if (fixStatus=='1')
-            warmStart=true;
+            gpsInternalClock=true;
           else if ((fixStatus=='2') || (fixStatus=='3')){
 
             if (timeStatus()==timeSet){
@@ -271,10 +269,8 @@ bool TimeSource(char *pResponse){
               EEPROM.put(sizeof(bool), now());
               EEPROM.put(sizeof(time_t)+sizeof(bool),fixStatus);
             }
-            warmStart=false;
+            gpsInternalClock=false;
           }
-          //Serial.print("\r\nGSA warmStart:");
-          //Serial.println(bWarmStart);
           bResult=true;
         }
       }
@@ -344,7 +340,7 @@ void ProcessGPS(){
       }
       while ((gpsSerial.available() > 0)) {
         if (packetOffset>=sizeof(gpsResponse)){
-          Serial.println("MEMORY OVERFLOW");
+          Serial.println(F("MEMORY OVERFLOW"));
           memset(gpsResponse,0,sizeof(gpsResponse));
           packetOffset=0;
         }
@@ -353,8 +349,6 @@ void ProcessGPS(){
           //regardless where a start packet comes in, start building a new sentence, tossing buffer
           buildingSentence=true;
           if (packetOffset!=0){
-            //Serial.print("Reset mid-sentence:");
-            //Serial.println(packetOffset);
             memset(gpsResponse, 0, sizeof(gpsResponse));
           }
           gpsResponse[0]=c;
@@ -377,7 +371,7 @@ void ProcessGPS(){
       if (!buildingSentence){
         if (bFullSentence){
           if (CheckSum(gpsResponse)){
-            Serial.print("CS+:");
+            Serial.print(F("CS+:"));
             for (int x=0;x<sizeof(gpsResponse);x++)  {
               if (gpsResponse[x]!=0)
                 Serial.print(gpsResponse[x]);
@@ -390,7 +384,7 @@ void ProcessGPS(){
             }
           }
           else{
-            Serial.print("CS-:");
+            Serial.print(F("CS-:"));
             for (int x=0;x<sizeof(gpsResponse);x++)  {
               if (gpsResponse[x]!=0)
                 Serial.print(gpsResponse[x]);
